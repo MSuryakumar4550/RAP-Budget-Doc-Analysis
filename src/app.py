@@ -26,11 +26,18 @@ st.title("PDF Document-Answering Agent")
 
 if "docs" not in st.session_state:
     st.session_state["docs"] = {}
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
 
-# --- Sidebar: PDF upload ---
+# --- Sidebar ---
 with st.sidebar:
-    st.header("Upload PDFs")
-    uploaded = st.file_uploader("Choose a PDF file", type=["pdf"], key="uploader")
+    st.header("Documents")
+
+    uploaded = st.file_uploader(
+        "Upload PDF",
+        type=["pdf"],
+        key=f"uploader_{st.session_state['uploader_key']}",
+    )
 
     if uploaded:
         already_loaded = any(
@@ -46,10 +53,12 @@ with st.sidebar:
                     "name": uploaded.name,
                     "tmp_path": tmp_path,
                 }
+                st.session_state["uploader_key"] += 1
+                st.rerun()
             except Exception as e:
-                st.error(f"Failed to load PDF: {e}")
+                st.error(f"Failed to load: {e}")
 
-    # Reload any docs that got lost from DOCUMENTS (Streamlit rerun)
+    # Reload docs lost from DOCUMENTS on Streamlit rerun
     for doc_id, info in list(st.session_state["docs"].items()):
         if doc_id not in DOCUMENTS:
             tmp_path = info.get("tmp_path")
@@ -59,22 +68,38 @@ with st.sidebar:
                 if new_doc_id != doc_id:
                     del st.session_state["docs"][doc_id]
 
-    # Show loaded PDFs
+    # Document list
     if st.session_state["docs"]:
-        st.subheader(f"{len(st.session_state['docs'])} PDF(s) loaded")
-        for doc_id, info in st.session_state["docs"].items():
-            st.success(f"{info['name']} ({doc_id})")
-    else:
-        st.info("No PDFs uploaded yet.")
+        for doc_id in list(st.session_state["docs"].keys()):
+            info = st.session_state["docs"].get(doc_id)
+            if not info:
+                continue
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.caption(info["name"])
+            with col2:
+                if st.button("✕", key=f"rm_{doc_id}"):
+                    tmp_path = info.get("tmp_path")
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    DOCUMENTS.pop(doc_id, None)
+                    DOC_NAMES.pop(doc_id, None)
+                    del st.session_state["docs"][doc_id]
+                    st.rerun()
 
-    if st.button("Clear all"):
-        for info in st.session_state["docs"].values():
-            tmp_path = info.get("tmp_path")
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
+        if st.button("Clear All"):
+            for did, info in list(st.session_state["docs"].items()):
+                tmp_path = info.get("tmp_path")
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                DOCUMENTS.pop(did, None)
+                DOC_NAMES.pop(did, None)
+            st.session_state["docs"] = {}
+            st.session_state["history"] = []
+            st.session_state["uploader_key"] += 1
+            if LOG_FILE.exists():
+                LOG_FILE.unlink()
+            st.rerun()
 
 # --- Main area: Chat ---
 if "history" not in st.session_state:

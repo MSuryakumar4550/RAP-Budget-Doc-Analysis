@@ -30,8 +30,8 @@ def _build_system(doc_ids):
     for did in doc_ids:
         doc = DOCUMENTS.get(did)
         if doc:
-            name = DOC_NAMES.get(did, doc.name)
-            doc_lines.append(f"- {did}: {name} ({doc.page_count} pages)")
+            name = DOC_NAMES.get(did, doc["title"])
+            doc_lines.append(f"- {did}: {name} ({doc['page_count']} pages)")
     doc_info = "\n".join(doc_lines) if doc_lines else "No documents loaded."
     return _SYSTEM_TEMPLATE.replace("[[DOCUMENTS]]", doc_info)
 
@@ -60,7 +60,7 @@ def _grounding_check(pages, pages_read):
 
 def _get_page_count(doc_id):
     doc = DOCUMENTS.get(doc_id)
-    return doc.page_count if doc else 0
+    return doc["page_count"] if doc else 0
 
 
 def answer_question(question, doc_ids):
