@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 
 import streamlit as st
-from tools import load_pdf, DOCUMENTS
+from tools import load_pdf, DOCUMENTS, DOC_NAMES
 from agent import answer_question
 
 _ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent
@@ -20,39 +20,58 @@ def read_logs():
             logs.append(json.loads(line))
     return logs
 
+
 st.set_page_config(page_title="PDF Document-Answering Agent")
 st.title("PDF Document-Answering Agent")
 
+if "docs" not in st.session_state:
+    st.session_state["docs"] = {}
+
 # --- Sidebar: PDF upload ---
 with st.sidebar:
-    st.header("Upload PDF")
-    uploaded = st.file_uploader("Choose a PDF file", type=["pdf"])
+    st.header("Upload PDFs")
+    uploaded = st.file_uploader("Choose a PDF file", type=["pdf"], key="uploader")
 
-    if uploaded and "doc_id" not in st.session_state:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(uploaded.read())
-            tmp_path = tmp.name
-        try:
-            doc_id = load_pdf(tmp_path)
-            st.session_state["doc_id"] = doc_id
-            st.session_state["pdf_name"] = uploaded.name
-            st.session_state["tmp_path"] = tmp_path
-        except Exception as e:
-            st.error(f"Failed to load PDF: {e}")
+    if uploaded:
+        already_loaded = any(
+            info["name"] == uploaded.name for info in st.session_state["docs"].values()
+        )
+        if not already_loaded:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(uploaded.read())
+                tmp_path = tmp.name
+            try:
+                doc_id = load_pdf(tmp_path, original_name=uploaded.name)
+                st.session_state["docs"][doc_id] = {
+                    "name": uploaded.name,
+                    "tmp_path": tmp_path,
+                }
+            except Exception as e:
+                st.error(f"Failed to load PDF: {e}")
 
-    if "doc_id" in st.session_state and st.session_state["doc_id"] not in DOCUMENTS:
-        tmp_path = st.session_state.get("tmp_path")
-        if tmp_path and os.path.exists(tmp_path):
-            new_doc_id = load_pdf(tmp_path)
-            st.session_state["doc_id"] = new_doc_id
+    # Reload any docs that got lost from DOCUMENTS (Streamlit rerun)
+    for doc_id, info in list(st.session_state["docs"].items()):
+        if doc_id not in DOCUMENTS:
+            tmp_path = info.get("tmp_path")
+            if tmp_path and os.path.exists(tmp_path):
+                new_doc_id = load_pdf(tmp_path, original_name=info.get("name"))
+                st.session_state["docs"][new_doc_id] = info
+                if new_doc_id != doc_id:
+                    del st.session_state["docs"][doc_id]
 
-    if "doc_id" in st.session_state:
-        st.success(f"Loaded: {st.session_state['pdf_name']}")
+    # Show loaded PDFs
+    if st.session_state["docs"]:
+        st.subheader(f"{len(st.session_state['docs'])} PDF(s) loaded")
+        for doc_id, info in st.session_state["docs"].items():
+            st.success(f"{info['name']} ({doc_id})")
+    else:
+        st.info("No PDFs uploaded yet.")
 
-    if st.button("Clear chat"):
-        tmp_path = st.session_state.get("tmp_path")
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    if st.button("Clear all"):
+        for info in st.session_state["docs"].values():
+            tmp_path = info.get("tmp_path")
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
@@ -61,15 +80,19 @@ with st.sidebar:
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
-question = st.text_input("Ask a question about the PDF", placeholder="Ask a question about the PDF")
+question = st.text_input(
+    "Ask a question about your PDFs",
+    placeholder="Ask a question about your PDFs",
+)
 ask_clicked = st.button("Ask")
 
 if ask_clicked and question:
-    if "doc_id" not in st.session_state:
-        st.warning("Upload a PDF first.")
+    if not st.session_state["docs"]:
+        st.warning("Upload at least one PDF first.")
     else:
+        doc_ids = list(st.session_state["docs"].keys())
         with st.spinner("Thinking..."):
-            result = answer_question(question, st.session_state["doc_id"])
+            result = answer_question(question, doc_ids)
         st.session_state["history"].append({"question": question, "result": result})
 
 # --- Display results ---

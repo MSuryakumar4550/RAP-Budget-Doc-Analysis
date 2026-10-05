@@ -1,5 +1,7 @@
 import os
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
+# pyrefly: ignore [missing-import]
 from google import genai
 
 _dir = os.path.dirname(os.path.abspath(__file__))

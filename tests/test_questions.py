@@ -14,12 +14,12 @@ TEST_QUESTIONS = [
 ]
 
 
-def run_tests(pdf_path):
-    doc_id = load_pdf(pdf_path)
+def run_tests(pdf_paths):
+    doc_ids = [load_pdf(p) for p in pdf_paths]
     passed = 0
 
     for i, (question, expected) in enumerate(TEST_QUESTIONS, 1):
-        result = answer_question(question, doc_id)
+        result = answer_question(question, doc_ids)
         answer_lower = result["answer"].lower()
         match = any(word.lower() in answer_lower for word in expected)
 
@@ -37,6 +37,6 @@ def run_tests(pdf_path):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python test_questions.py <path-to-pdf>")
+        print("Usage: python test_questions.py <pdf1> [pdf2] [pdf3] ...")
         sys.exit(1)
-    run_tests(sys.argv[1])
+    run_tests(sys.argv[1:])

@@ -2,12 +2,12 @@ import json
 import os
 
 from llm import ask
-from tools import TOOLS, DOCUMENTS
+from tools import TOOLS, DOCUMENTS, DOC_NAMES
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 _root = os.path.join(_dir, "..")
 with open(os.path.join(_root, "prompts", "system.md")) as f:
-    SYSTEM = f.read()
+    _SYSTEM_TEMPLATE = f.read()
 
 TOOL_INFO = {
     "list_headings": "list_headings(doc_id) – Returns section headings and page numbers from the PDF table of contents.",
@@ -20,9 +20,20 @@ TOOL_INFO = {
 tool_desc = "\n".join(
     TOOL_INFO.get(name, name) for name in TOOLS
 )
-SYSTEM = SYSTEM.replace("[[TOOLS]]", tool_desc)
+_SYSTEM_TEMPLATE = _SYSTEM_TEMPLATE.replace("[[TOOLS]]", tool_desc)
 
 MAX_BUDGET = 6
+
+
+def _build_system(doc_ids):
+    doc_lines = []
+    for did in doc_ids:
+        doc = DOCUMENTS.get(did)
+        if doc:
+            name = DOC_NAMES.get(did, doc.name)
+            doc_lines.append(f"- {did}: {name} ({doc.page_count} pages)")
+    doc_info = "\n".join(doc_lines) if doc_lines else "No documents loaded."
+    return _SYSTEM_TEMPLATE.replace("[[DOCUMENTS]]", doc_info)
 
 
 def _parse_json(raw):
@@ -33,27 +44,49 @@ def _parse_json(raw):
     return json.loads(text)
 
 
+def _flatten_pages(pages):
+    flat = []
+    for p in pages:
+        if isinstance(p, list):
+            flat.extend(p)
+        elif isinstance(p, int):
+            flat.append(p)
+    return flat
+
+
 def _grounding_check(pages, pages_read):
-    return all(p in pages_read for p in pages)
+    return all(p in pages_read for p in _flatten_pages(pages))
 
 
-def answer_question(question, doc_id):
+def _get_page_count(doc_id):
+    doc = DOCUMENTS.get(doc_id)
+    return doc.page_count if doc else 0
+
+
+def answer_question(question, doc_ids):
+    if isinstance(doc_ids, str):
+        doc_ids = [doc_ids]
+
     calls_used = 0
     pages_read = set()
     history = []
     seen = set()
     trace = []
 
-    doc = DOCUMENTS.get(doc_id)
-    page_count = doc.page_count if doc else 0
+    system = _build_system(doc_ids)
+    single_doc = len(doc_ids) == 1
 
     while calls_used < MAX_BUDGET:
-        prompt = f"Question: {question}\nDocument: {doc_id}\n"
+        prompt = f"Question: {question}\n"
+        if single_doc:
+            prompt += f"Document: {doc_ids[0]}\n"
+        else:
+            prompt += f"Documents available: {', '.join(doc_ids)}\n"
         if history:
             prompt += "\n".join(history) + "\n"
         prompt += f"\nCalls left: {MAX_BUDGET - calls_used}"
 
-        raw = ask(prompt, SYSTEM)
+        raw = ask(prompt, system)
 
         reply = None
         parse_retries = 0
@@ -64,10 +97,14 @@ def answer_question(question, doc_id):
             except (json.JSONDecodeError, ValueError):
                 parse_retries += 1
                 history.append("Reply with ONLY JSON.")
-                prompt = f"Question: {question}\nDocument: {doc_id}\n"
+                prompt = f"Question: {question}\n"
+                if single_doc:
+                    prompt += f"Document: {doc_ids[0]}\n"
+                else:
+                    prompt += f"Documents available: {', '.join(doc_ids)}\n"
                 prompt += "\n".join(history) + "\n"
                 prompt += f"\nCalls left: {MAX_BUDGET - calls_used}"
-                raw = ask(prompt, SYSTEM)
+                raw = ask(prompt, system)
 
         if reply is None:
             return {
@@ -81,7 +118,7 @@ def answer_question(question, doc_id):
         # --- Final answer ---
         if "final" in reply:
             answer = reply["final"]
-            pages = reply.get("pages", [])
+            pages = _flatten_pages(reply.get("pages", []))
             status = "done" if _grounding_check(pages, pages_read) else "insufficient"
             trace.append({"type": "final", "answer": answer, "pages": pages, "status": status})
             return {
@@ -107,15 +144,30 @@ def answer_question(question, doc_id):
             trace.append({"type": "rejected", "tool": tool_name, "reason": "unknown tool"})
             continue
 
+        # For single-doc mode, auto-inject doc_id if LLM didn't provide one
+        if single_doc and tool_name != "list_documents" and "doc_id" not in args:
+            args["doc_id"] = doc_ids[0]
+
+        # Validate: doc_id must be valid for tools that need it
+        if tool_name in ("list_headings", "search_keyword", "get_page"):
+            target_doc_id = args.get("doc_id", "")
+            if target_doc_id not in DOCUMENTS:
+                msg = f"Rejected {tool_name}: invalid doc_id '{target_doc_id}'"
+                history.append(msg)
+                trace.append({"type": "rejected", "tool": tool_name, "args": args, "reason": "invalid doc_id"})
+                continue
+
         # Validate: args
         rejected = False
         reason = ""
 
         if tool_name == "get_page":
+            target_doc_id = args.get("doc_id", "")
+            pc = _get_page_count(target_doc_id)
             page = args.get("page_number")
-            if not isinstance(page, int) or page < 1 or page > page_count:
+            if not isinstance(page, int) or page < 1 or page > pc:
                 rejected = True
-                reason = f"page_number must be int between 1 and {page_count}"
+                reason = f"page_number must be int between 1 and {pc}"
         elif tool_name == "search_keyword":
             kw = args.get("keyword", "")
             if not isinstance(kw, str) or not kw.strip():
@@ -141,8 +193,7 @@ def answer_question(question, doc_id):
             if tool_name == "list_documents":
                 result = TOOLS[tool_name]()
             else:
-                tool_args = {"doc_id": doc_id, **args}
-                result = TOOLS[tool_name](**tool_args)
+                result = TOOLS[tool_name](**args)
         except Exception as e:
             result = f"Error: {e}"
 
@@ -156,16 +207,20 @@ def answer_question(question, doc_id):
         calls_used += 1
 
     # Budget exhausted — force a final answer
-    prompt = f"Question: {question}\nDocument: {doc_id}\n"
+    prompt = f"Question: {question}\n"
+    if single_doc:
+        prompt += f"Document: {doc_ids[0]}\n"
+    else:
+        prompt += f"Documents available: {', '.join(doc_ids)}\n"
     prompt += "\n".join(history)
     prompt += "\nNo tool calls left, you must now give a final answer."
 
-    raw = ask(prompt, SYSTEM)
+    raw = ask(prompt, system)
 
     try:
         reply = _parse_json(raw)
         answer = reply.get("final", raw.strip())
-        pages = reply.get("pages", [])
+        pages = _flatten_pages(reply.get("pages", []))
     except (json.JSONDecodeError, ValueError):
         answer = raw.strip()
         pages = []

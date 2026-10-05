@@ -3,6 +3,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 
 _ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent
@@ -10,6 +11,13 @@ LOG_FILE = _ROOT / "logs" / "run.jsonl"
 LOG_FILE.parent.mkdir(exist_ok=True)
 
 DOCUMENTS = {}
+DOC_NAMES = {}
+
+
+def _normalize(text):
+    text = unicodedata.normalize("NFKD", text)
+    text = re.sub(r'\s+', ' ', text).lower().strip()
+    return text
 
 
 def log_tool_call(tool_name, args, result):
@@ -22,14 +30,15 @@ def log_tool_call(tool_name, args, result):
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(event, default=str) + "\n")
 
-def load_pdf(file_path):
+def load_pdf(file_path, original_name=None):
     try:
         doc = fitz.open(file_path)
     except Exception as e:
         raise ValueError(f"Could not open PDF: {e}")
-    
+
     doc_id = f"doc_{len(DOCUMENTS) + 1}"
     DOCUMENTS[doc_id] = doc
+    DOC_NAMES[doc_id] = original_name or os.path.basename(file_path)
     log_tool_call("load_pdf", {"file_path": file_path}, doc_id)
     return doc_id
 
@@ -66,12 +75,12 @@ def search_keyword(doc_id, keyword):
         raise ValueError("Invalid doc_id")
         
     doc = DOCUMENTS[doc_id]
-    keyword = re.sub(r'\s+', ' ', keyword.lower()).strip()
-    
+    keyword = _normalize(keyword)
+
     found_pages = set()
     for i in range(doc.page_count):
         page_text = doc.load_page(i).get_text()
-        page_text = re.sub(r'\s+', ' ', page_text).lower()
+        page_text = _normalize(page_text)
         if keyword in page_text:
             found_pages.add(i + 1)
             
@@ -100,7 +109,7 @@ def list_documents():
     for doc_id, doc in DOCUMENTS.items():
         result.append({
             "doc_id": doc_id,
-            "title": doc.name,
+            "title": DOC_NAMES.get(doc_id, doc.name),
             "pages": doc.page_count,
         })
     log_tool_call("list_documents", {}, result)
